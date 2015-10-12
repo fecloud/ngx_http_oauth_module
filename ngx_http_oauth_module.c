@@ -38,6 +38,22 @@ static ngx_int_t ngx_http_oauth_init(ngx_conf_t *cf);
 static char *ngx_http_oauth_user_file(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
+/**
+ * 分隔字符串
+ */
+static int split(char dst[][80], char* str, const char* spl)
+{
+    int n = 0;
+    char *result = NULL;
+    result = strtok(str, spl);
+    while( result != NULL )
+    {
+        strcpy(dst[n++], result);
+        result = strtok(NULL, spl);
+    }
+    return n;
+}
+
 
 static ngx_command_t  ngx_http_oauth_commands[] = {
 
@@ -95,6 +111,10 @@ ngx_module_t  ngx_http_oauth_module = {
 static ngx_int_t
 ngx_http_oauth_handler(ngx_http_request_t *r)
 {
+
+    //---
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_oauth_handler ");
+
     off_t                            offset;
     ssize_t                          n;
     ngx_fd_t                         fd;
@@ -349,30 +369,26 @@ ngx_http_oauth_crypt_handler(ngx_http_request_t *r,
 static ngx_int_t
 ngx_http_oauth_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
 {
-    size_t   len;
-    u_char  *basic, *p;
 
-    r->headers_out.www_authenticate = ngx_list_push(&r->headers_out.headers);
-    if (r->headers_out.www_authenticate == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    //有query string
+    if (r->args.len) {
+        char dst[10][80];
+        int cnt = split(dst, (char*)r->args.data, "&");
+        int i = 0;
+        u_char wan[] = "bf81882c889278eeb1192f1aa4980c14";
+        for (;i < cnt; i++) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,"ngx_strcasecmp str1:%s \n", &dst[i]);
+            if (ngx_strcasecmp((u_char*)&dst[i], wan) == 0) {
+                return NGX_OK;
+            } else {
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,"ngx_strcasecmp result:%d \n", ngx_strcasecmp((u_char*)&dst[i], wan));
+            }
+        }
+
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,"oauth ngx_http_oauth_set_realm args:%s", r->args.data);
     }
 
-    len = sizeof("Basic realm=\"\"") - 1 + realm->len;
-
-    basic = ngx_pnalloc(r->pool, len);
-    if (basic == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    p = ngx_cpymem(basic, "Basic realm=\"", sizeof("Basic realm=\"") - 1);
-    p = ngx_cpymem(p, realm->data, realm->len);
-    *p = '"';
-
-    r->headers_out.www_authenticate->hash = 1;
-    ngx_str_set(&r->headers_out.www_authenticate->key, "WWW-Authenticate");
-    r->headers_out.www_authenticate->value.data = basic;
-    r->headers_out.www_authenticate->value.len = len;
-
+    //没有query string
     return NGX_HTTP_UNAUTHORIZED;
 }
 
