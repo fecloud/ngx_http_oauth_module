@@ -38,40 +38,77 @@ static ngx_int_t ngx_http_oauth_init(ngx_conf_t *cf);
 static char *ngx_http_oauth_user_file(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
+static char* eq_query_name(ngx_http_request_t *r, char *str, char *name) {
+    char *index = ngx_strchr(str, '=');
+    if (index != NULL) {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth found =:%s\n", index+ 1);
+        int query_name_len = index - str;
+        char* query_name = malloc(query_name_len + 1);
+        ngx_memzero(query_name, query_name_len + 1);
+        ngx_memcpy(query_name, str, query_name_len);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth query_name:%s\n", query_name);
+
+        int query_value_len = (str + ngx_strlen(str)) - index - 1;
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth query_value_len:%d\n", query_value_len);
+        char* query_value = malloc(query_value_len + 1);
+        ngx_memzero(query_value, query_value_len + 1);
+        ngx_memcpy(query_value, index + 1, query_value_len);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth query_value:%s\n", query_value);
+
+        int cmp = ngx_strcmp(name, query_name);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth cmp:%d\n", cmp);
+        if (cmp == 0) {
+            free(query_name);
+            query_name = NULL;
+            return query_value;
+        } else {
+            free(query_name);
+            query_name = NULL;
+            free(query_value);
+            query_value = NULL;
+        }
+    }
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth eq_query_name result:%d\n", 0);
+    return NULL;
+}
+
 /**
  * 取querystring
  */
-static char* get_querystring(char* str, const char* name)
+static char* get_querystring(ngx_http_request_t *r, char *str, char* name)
 {
  
     if (str == NULL || name == NULL) {
         return NULL;
     }
-    char* query_name = NULL;
-    char* query_value = NULL;
 
-    int index = 0;
-    int len = 0;
-    char* result = NULL;
-    while ((result = strtok(str, "&")) != NULL) {
-        len = ngx_strlen(result);
-        index = ngx_strchr(result, '=') - result;
-        if (index) {
-            query_name = (char*)malloc(index);
-            query_value = (char*)malloc(len - index);
-            if (ngx_strcmp(name, query_name)) {
-                free(query_name);
-                return query_value;
-            } else {
-                free(query_name);
-                free(query_value);
-            }
+    int str_len = ngx_strlen(str);
+    if (str_len == 0) {
+        return NULL;
+    }
 
+    if (ngx_strchr(str, '&') == NULL) {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth only one query:%s\n", str);
+        return eq_query_name(r, str, name);
+    }
+
+    char *query_str = (char*)malloc(str_len + 1);
+    ngx_memzero(query_str, str_len + 1);
+    ngx_memcpy(query_str, str, str_len);
+
+    char * pch;
+    char *result = NULL;
+    for (pch = strtok (str,"&"); pch != NULL; pch = strtok (NULL, "&")) {
+        result = eq_query_name(r, pch, name);
+        if (result != NULL) {
+            break;
         }
-    } 
+    }
 
-
-    return NULL;
+    free(query_str);
+    query_str = NULL;
+    
+    return result;
 }
 
 static ngx_command_t  ngx_http_oauth_commands[] = {
@@ -385,26 +422,38 @@ ngx_http_oauth_crypt_handler(ngx_http_request_t *r,
 static ngx_int_t
 ngx_http_oauth_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
 {
-    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "-----------realm:%s\n", realm->data);
+    
+    ngx_int_t http_code = NGX_HTTP_UNAUTHORIZED;
     //有query string
     if (r->args.len) {
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "-----------request args:%s\n", r->args.data);
-        char* oauth = get_querystring((char*)r->args.data, (char*)realm->data);
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "-----------get args:%s\n", oauth);
-        char* wan = "bf81882c889278eeb1192f1aa4980c14";
+
+        int realm_str_len = realm->len + 1;
+        char *realm_str = (char*)malloc(realm_str_len);
+        ngx_memzero(realm_str, realm_str_len);
+        ngx_memcpy(realm_str, realm->data, realm->len);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth realm_str:%s\n", realm_str);
+
+        int query_str_len = r->args.len + 1;
+        char *query_str = (char*)malloc(query_str_len);
+        ngx_memzero(query_str, query_str_len);
+        ngx_memcpy(query_str, r->args.data, r->args.len);
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth request args:%s\n", query_str);
+
+        char *oauth = get_querystring(r, query_str, realm_str);
+        char *wan = "bf81882c889278eeb1192f1aa4980c14";
         if (oauth != NULL) {
-            if (ngx_strcmp(oauth, wan)) {
-                free(oauth);
-                oauth = NULL;
-                return NGX_OK;
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth result oauth:%s\n", oauth);
+            if (ngx_strcmp(oauth, wan) == 0) {
+                http_code = NGX_OK;
             }
             free(oauth);
             oauth = NULL;
         }
     }
 
-    //没有query string
-    return NGX_HTTP_UNAUTHORIZED;
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth ngx_http_oauth_set_realm result:%d\n", http_code);
+    return http_code;
 }
 
 static void
