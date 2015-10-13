@@ -39,21 +39,40 @@ static char *ngx_http_oauth_user_file(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
 /**
- * 分隔字符串
+ * 取querystring
  */
-static int split(char dst[][80], char* str, const char* spl)
+static char* get_querystring(char* str, const char* name)
 {
-    int n = 0;
-    char *result = NULL;
-    result = strtok(str, spl);
-    while( result != NULL )
-    {
-        strcpy(dst[n++], result);
-        result = strtok(NULL, spl);
+ 
+    if (str == NULL || name == NULL) {
+        return NULL;
     }
-    return n;
-}
+    char* query_name = NULL;
+    char* query_value = NULL;
 
+    int index = 0;
+    int len = 0;
+    char* result = NULL;
+    while ((result = strtok(str, "&")) != NULL) {
+        len = ngx_strlen(result);
+        index = ngx_strchr(result, '=') - result;
+        if (index) {
+            query_name = (char*)malloc(index);
+            query_value = (char*)malloc(len - index);
+            if (ngx_strcmp(name, query_name)) {
+                free(query_name);
+                return query_value;
+            } else {
+                free(query_name);
+                free(query_value);
+            }
+
+        }
+    } 
+
+
+    return NULL;
+}
 
 static ngx_command_t  ngx_http_oauth_commands[] = {
 
@@ -111,9 +130,6 @@ ngx_module_t  ngx_http_oauth_module = {
 static ngx_int_t
 ngx_http_oauth_handler(ngx_http_request_t *r)
 {
-
-    //---
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "ngx_http_oauth_handler ");
 
     off_t                            offset;
     ssize_t                          n;
@@ -369,23 +385,22 @@ ngx_http_oauth_crypt_handler(ngx_http_request_t *r,
 static ngx_int_t
 ngx_http_oauth_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
 {
-
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "-----------realm:%s\n", realm->data);
     //有query string
     if (r->args.len) {
-        char dst[10][80];
-        int cnt = split(dst, (char*)r->args.data, "&");
-        int i = 0;
-        u_char wan[] = "bf81882c889278eeb1192f1aa4980c14";
-        for (;i < cnt; i++) {
-            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,"ngx_strcasecmp str1:%s \n", &dst[i]);
-            if (ngx_strcasecmp((u_char*)&dst[i], wan) == 0) {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "-----------request args:%s\n", r->args.data);
+        char* oauth = get_querystring((char*)r->args.data, (char*)realm->data);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "-----------get args:%s\n", oauth);
+        char* wan = "bf81882c889278eeb1192f1aa4980c14";
+        if (oauth != NULL) {
+            if (ngx_strcmp(oauth, wan)) {
+                free(oauth);
+                oauth = NULL;
                 return NGX_OK;
-            } else {
-                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,"ngx_strcasecmp result:%d \n", ngx_strcasecmp((u_char*)&dst[i], wan));
             }
+            free(oauth);
+            oauth = NULL;
         }
-
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,"oauth ngx_http_oauth_set_realm args:%s", r->args.data);
     }
 
     //没有query string
