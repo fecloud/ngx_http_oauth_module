@@ -11,7 +11,7 @@
 #include <ngx_crypt.h>
 
 
-#define NGX_HTTP_AUTH_BUF_SIZE  2048
+#define NGX_HTTP_OAUTH_BUF_SIZE  2048
 
 
 typedef struct {
@@ -26,10 +26,11 @@ typedef struct {
 
 
 static ngx_int_t ngx_http_oauth_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_oauth_crypt_handler(ngx_http_request_t *r,
-    ngx_http_oauth_ctx_t *ctx, ngx_str_t *passwd, ngx_str_t *realm);
-static ngx_int_t ngx_http_oauth_set_realm(ngx_http_request_t *r,
-    ngx_str_t *realm);
+static ngx_int_t ngx_http_oauth_handler_check(ngx_http_request_t *r,
+    ngx_str_t *realm, ngx_str_t *user_file);
+static ngx_int_t
+    ngx_http_oauth_handler_user_file(ngx_http_request_t *r,
+    char *query_value, ngx_str_t *user_file);
 static void ngx_http_oauth_close(ngx_file_t *file);
 static void *ngx_http_oauth_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_oauth_merge_loc_conf(ngx_conf_t *cf,
@@ -41,7 +42,7 @@ static char *ngx_http_oauth_user_file(ngx_conf_t *cf, ngx_command_t *cmd,
 static char* eq_query_name(ngx_http_request_t *r, char *str, char *name) {
     char *index = ngx_strchr(str, '=');
     if (index != NULL) {
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth found =:%s\n", index+ 1);
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth found %s\n", "=");
         int query_name_len = index - str;
         char* query_name = malloc(query_name_len + 1);
         ngx_memzero(query_name, query_name_len + 1);
@@ -49,7 +50,6 @@ static char* eq_query_name(ngx_http_request_t *r, char *str, char *name) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth query_name:%s\n", query_name);
 
         int query_value_len = (str + ngx_strlen(str)) - index - 1;
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth query_value_len:%d\n", query_value_len);
         char* query_value = malloc(query_value_len + 1);
         ngx_memzero(query_value, query_value_len + 1);
         ngx_memcpy(query_value, index + 1, query_value_len);
@@ -167,23 +167,9 @@ ngx_module_t  ngx_http_oauth_module = {
 static ngx_int_t
 ngx_http_oauth_handler(ngx_http_request_t *r)
 {
-
-    off_t                            offset;
-    ssize_t                          n;
-    ngx_fd_t                         fd;
-    ngx_int_t                        rc;
-    ngx_err_t                        err;
-    ngx_str_t                        pwd, realm, user_file;
-    ngx_uint_t                       i, level, login, left, passwd;
-    ngx_file_t                       file;
-    ngx_http_oauth_ctx_t       *ctx;
+    ngx_str_t   realm, user_file;
     ngx_http_oauth_loc_conf_t  *alcf;
-    u_char                           buf[NGX_HTTP_AUTH_BUF_SIZE];
-    enum {
-        sw_login,
-        sw_passwd,
-        sw_skip
-    } state;
+
 
     alcf = ngx_http_get_module_loc_conf(r, ngx_http_oauth_module);
 
@@ -199,230 +185,19 @@ ngx_http_oauth_handler(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
-    ctx = ngx_http_get_module_ctx(r, ngx_http_oauth_module);
-
-    if (ctx) {
-        return ngx_http_oauth_crypt_handler(r, ctx, &ctx->passwd,
-                                                 &realm);
-    }
-
-    rc = ngx_http_auth_basic_user(r);
-
-    if (rc == NGX_DECLINED) {
-
-        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
-                      "no user/password was provided for basic authentication");
-
-        return ngx_http_oauth_set_realm(r, &realm);
-    }
-
-    if (rc == NGX_ERROR) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
     if (ngx_http_complex_value(r, &alcf->user_file, &user_file) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    fd = ngx_open_file(user_file.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
-
-    if (fd == NGX_INVALID_FILE) {
-        err = ngx_errno;
-
-        if (err == NGX_ENOENT) {
-            level = NGX_LOG_ERR;
-            rc = NGX_HTTP_FORBIDDEN;
-
-        } else {
-            level = NGX_LOG_CRIT;
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-
-        ngx_log_error(level, r->connection->log, err,
-                      ngx_open_file_n " \"%s\" failed", user_file.data);
-
-        return rc;
-    }
-
-    ngx_memzero(&file, sizeof(ngx_file_t));
-
-    file.fd = fd;
-    file.name = user_file;
-    file.log = r->connection->log;
-
-    state = sw_login;
-    passwd = 0;
-    login = 0;
-    left = 0;
-    offset = 0;
-
-    for ( ;; ) {
-        i = left;
-
-        n = ngx_read_file(&file, buf + left, NGX_HTTP_AUTH_BUF_SIZE - left,
-                          offset);
-
-        if (n == NGX_ERROR) {
-            ngx_http_oauth_close(&file);
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-
-        if (n == 0) {
-            break;
-        }
-
-        for (i = left; i < left + n; i++) {
-            switch (state) {
-
-            case sw_login:
-                if (login == 0) {
-
-                    if (buf[i] == '#' || buf[i] == CR) {
-                        state = sw_skip;
-                        break;
-                    }
-
-                    if (buf[i] == LF) {
-                        break;
-                    }
-                }
-
-                if (buf[i] != r->headers_in.user.data[login]) {
-                    state = sw_skip;
-                    break;
-                }
-
-                if (login == r->headers_in.user.len) {
-                    state = sw_passwd;
-                    passwd = i + 1;
-                }
-
-                login++;
-
-                break;
-
-            case sw_passwd:
-                if (buf[i] == LF || buf[i] == CR || buf[i] == ':') {
-                    buf[i] = '\0';
-
-                    ngx_http_oauth_close(&file);
-
-                    pwd.len = i - passwd;
-                    pwd.data = &buf[passwd];
-
-                    return ngx_http_oauth_crypt_handler(r, NULL, &pwd,
-                                                             &realm);
-                }
-
-                break;
-
-            case sw_skip:
-                if (buf[i] == LF) {
-                    state = sw_login;
-                    login = 0;
-                }
-
-                break;
-            }
-        }
-
-        if (state == sw_passwd) {
-            left = left + n - passwd;
-            ngx_memmove(buf, &buf[passwd], left);
-            passwd = 0;
-
-        } else {
-            left = 0;
-        }
-
-        offset += n;
-    }
-
-    ngx_http_oauth_close(&file);
-
-    if (state == sw_passwd) {
-        pwd.len = i - passwd;
-        pwd.data = ngx_pnalloc(r->pool, pwd.len + 1);
-        if (pwd.data == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-
-        ngx_cpystrn(pwd.data, &buf[passwd], pwd.len + 1);
-
-        return ngx_http_oauth_crypt_handler(r, NULL, &pwd, &realm);
-    }
-
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "user \"%V\" was not found in \"%V\"",
-                  &r->headers_in.user, &user_file);
-
-    return ngx_http_oauth_set_realm(r, &realm);
+    return ngx_http_oauth_handler_check(r, &realm, &user_file);
 }
 
-
 static ngx_int_t
-ngx_http_oauth_crypt_handler(ngx_http_request_t *r,
-    ngx_http_oauth_ctx_t *ctx, ngx_str_t *passwd, ngx_str_t *realm)
+ngx_http_oauth_handler_check(ngx_http_request_t *r, ngx_str_t *realm, ngx_str_t *user_file)
 {
-    ngx_int_t   rc;
-    u_char     *encrypted;
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth_handler_check realm:%s\n", realm->data);
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth_handler_check user_file:%s\n", user_file->data);
 
-    rc = ngx_crypt(r->pool, r->headers_in.passwd.data, passwd->data,
-                   &encrypted);
-
-    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                   "rc: %d user: \"%V\" salt: \"%s\"",
-                   rc, &r->headers_in.user, passwd->data);
-
-    if (rc == NGX_OK) {
-        if (ngx_strcmp(encrypted, passwd->data) == 0) {
-            return NGX_OK;
-        }
-
-        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "encrypted: \"%s\"", encrypted);
-
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "user \"%V\": password mismatch",
-                      &r->headers_in.user);
-
-        return ngx_http_oauth_set_realm(r, realm);
-    }
-
-    if (rc == NGX_ERROR) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    /* rc == NGX_AGAIN */
-
-    if (ctx == NULL) {
-        ctx = ngx_palloc(r->pool, sizeof(ngx_http_oauth_ctx_t));
-        if (ctx == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-
-        ngx_http_set_ctx(r, ctx, ngx_http_oauth_module);
-
-        ctx->passwd.len = passwd->len;
-        passwd->len++;
-
-        ctx->passwd.data = ngx_pstrdup(r->pool, passwd);
-        if (ctx->passwd.data == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-
-    }
-
-    /* TODO: add mutex event */
-
-    return rc;
-}
-
-
-static ngx_int_t
-ngx_http_oauth_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
-{
-    
     ngx_int_t http_code = NGX_HTTP_UNAUTHORIZED;
     //有query string
     if (r->args.len) {
@@ -444,9 +219,13 @@ ngx_http_oauth_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
         char *wan = "bf81882c889278eeb1192f1aa4980c14";
         if (oauth != NULL) {
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth result oauth:%s\n", oauth);
+
             if (ngx_strcmp(oauth, wan) == 0) {
                 http_code = NGX_OK;
+            } else {
+                http_code = ngx_http_oauth_handler_user_file(r, oauth, user_file);
             }
+
             free(oauth);
             oauth = NULL;
         }
@@ -454,6 +233,52 @@ ngx_http_oauth_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth ngx_http_oauth_set_realm result:%d\n", http_code);
     return http_code;
+}
+
+static ngx_int_t 
+ngx_http_oauth_handler_user_file(ngx_http_request_t *r,
+    char *query_value, ngx_str_t *user_file) 
+{
+    ngx_fd_t    fd;
+    ngx_file_t  file;
+    
+    fd = ngx_open_file(user_file->data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+
+
+    if (fd == NGX_INVALID_FILE) {
+
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      ngx_open_file_n " \"%s\" failed", user_file->data);
+
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ngx_memzero(&file, sizeof(ngx_file_t));
+
+    file.fd = fd;
+    file.name = *user_file;
+    file.log = r->connection->log;
+
+    ngx_int_t result_code = NGX_HTTP_UNAUTHORIZED;
+    //read line and compare
+    char buffer[NGX_HTTP_OAUTH_BUF_SIZE];
+    int len = 0;
+    int offset = 0;
+    int i;
+    while (NGX_ERROR != (len = ngx_read_file(&file, &buffer, offset)) {
+        for (i = 0; i < len; i++) {
+            if (buffer[i] == '\n' || buffer[i] == '\r') {
+                int line_len = i;
+                char *query_str = (char*)malloc(query_str_len);
+                ngx_memzero(query_str, query_str_len);
+                ngx_memcpy(query_str, r->args.data, r->args.len);
+            }
+        }
+    }
+
+    ngx_http_oauth_close(&file);
+
+    return result_code;
 }
 
 static void
