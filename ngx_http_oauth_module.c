@@ -41,7 +41,7 @@ static char *ngx_http_oauth_user_file(ngx_conf_t *cf, ngx_command_t *cmd,
 
 static char* eq_query_name(ngx_http_request_t *r, char *str, char *name) {
     char *index = ngx_strchr(str, '=');
-    if (index != NULL) {
+    if (index != NULL && index != str) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth found %s\n", "=");
         int query_name_len = index - str;
         char* query_name = malloc(query_name_len + 1);
@@ -50,6 +50,9 @@ static char* eq_query_name(ngx_http_request_t *r, char *str, char *name) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth query_name:%s\n", query_name);
 
         int query_value_len = (str + ngx_strlen(str)) - index - 1;
+        if (query_value_len == 0) {
+            return NULL;
+        }
         char* query_value = malloc(query_value_len + 1);
         ngx_memzero(query_value, query_value_len + 1);
         ngx_memcpy(query_value, index + 1, query_value_len);
@@ -216,15 +219,10 @@ ngx_http_oauth_handler_check(ngx_http_request_t *r, ngx_str_t *realm, ngx_str_t 
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth request args:%s\n", query_str);
 
         char *oauth = get_querystring(r, query_str, realm_str);
-        char *wan = "bf81882c889278eeb1192f1aa4980c14";
         if (oauth != NULL) {
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth result oauth:%s\n", oauth);
 
-            if (ngx_strcmp(oauth, wan) == 0) {
-                http_code = NGX_OK;
-            } else {
-                http_code = ngx_http_oauth_handler_user_file(r, oauth, user_file);
-            }
+            http_code = ngx_http_oauth_handler_user_file(r, oauth, user_file);      
 
             free(oauth);
             oauth = NULL;
@@ -260,19 +258,39 @@ ngx_http_oauth_handler_user_file(ngx_http_request_t *r,
     file.log = r->connection->log;
 
     ngx_int_t result_code = NGX_HTTP_UNAUTHORIZED;
+
     //read line and compare
-    char buffer[NGX_HTTP_OAUTH_BUF_SIZE];
+    u_char buffer[NGX_HTTP_OAUTH_BUF_SIZE];
     int len = 0;
     int offset = 0;
     int i;
-    while (NGX_ERROR != (len = ngx_read_file(&file, &buffer, offset)) {
+    int line_len = 0;
+    while (NGX_ERROR != (len = ngx_read_file(&file, buffer, NGX_HTTP_OAUTH_BUF_SIZE, offset))) {
+
+        if (len == 0) {
+            break;
+        }        
+
         for (i = 0; i < len; i++) {
-            if (buffer[i] == '\n' || buffer[i] == '\r') {
-                int line_len = i;
-                char *query_str = (char*)malloc(query_str_len);
-                ngx_memzero(query_str, query_str_len);
-                ngx_memcpy(query_str, r->args.data, r->args.len);
+            if (buffer[i] == LF || buffer[i] == CR ) {
+                buffer[i] = '\0';
             }
+        }
+
+        line_len = ngx_strlen(buffer);
+        if (line_len == 0) {
+            offset += 1;
+            continue;
+        }
+
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth ngx_http_oauth_handler_user_file line:%s\n", buffer);
+
+        if (ngx_strcmp(query_value, buffer) == 0) {
+            result_code = NGX_OK;
+            break;
+        } else {
+            offset += line_len;
+            offset += 1;
         }
     }
 
