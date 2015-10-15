@@ -95,10 +95,6 @@ static char* get_querystring(ngx_http_request_t *r, char *str, char* name)
         return eq_query_name(r, str, name);
     }
 
-    char *query_str = (char*)malloc(str_len + 1);
-    ngx_memzero(query_str, str_len + 1);
-    ngx_memcpy(query_str, str, str_len);
-
     char * pch;
     char *result = NULL;
     for (pch = strtok (str,"&"); pch != NULL; pch = strtok (NULL, "&")) {
@@ -107,9 +103,6 @@ static char* get_querystring(ngx_http_request_t *r, char *str, char* name)
             break;
         }
     }
-
-    free(query_str);
-    query_str = NULL;
     
     return result;
 }
@@ -227,6 +220,11 @@ ngx_http_oauth_handler_check(ngx_http_request_t *r, ngx_str_t *realm, ngx_str_t 
             free(oauth);
             oauth = NULL;
         }
+		
+		free(realm_str);
+		realm_str = NULL;
+		free(query_str);
+		query_str = NULL;
     }
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth ngx_http_oauth_set_realm result:%d\n", http_code);
