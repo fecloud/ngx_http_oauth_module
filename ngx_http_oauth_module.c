@@ -280,6 +280,7 @@ ngx_http_oauth_handler_user_file(ngx_http_request_t *r,
         line_len = ngx_strlen(buffer);
         if (line_len == 0) {
             offset += 1;
+            ngx_memzero(&buffer, NGX_HTTP_OAUTH_BUF_SIZE);
             continue;
         }
 
@@ -292,6 +293,7 @@ ngx_http_oauth_handler_user_file(ngx_http_request_t *r,
             offset += line_len;
             offset += 1;
         }
+        ngx_memzero(&buffer, NGX_HTTP_OAUTH_BUF_SIZE);
     }
 
     ngx_http_oauth_close(&file);
