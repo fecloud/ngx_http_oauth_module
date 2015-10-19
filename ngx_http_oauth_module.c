@@ -38,6 +38,37 @@ static char *ngx_http_oauth_merge_loc_conf(ngx_conf_t *cf,
 static ngx_int_t ngx_http_oauth_init(ngx_conf_t *cf);
 static char *ngx_http_oauth_user_file(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+    
+/**
+ * 取cookie中指定的name
+ */
+static char* get_cookie(ngx_http_request_t *r, char* name)
+{
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "get_cookie cookie len:%d\n", r->headers_in.cookies.nelts);
+    
+    if (&r->headers_in.cookies) {
+        //如果有cookie
+        if (r->headers_in.cookies.nelts) {
+            
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "array = 0x%X\n", r->headers_in.cookies);  
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "  .elts = 0x%X\n", r->headers_in.cookies.elts);  
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "  .nelts = %d\n", r->headers_in.cookies.nelts);  
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "  .size = %d\n", r->headers_in.cookies.size);  
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "  .nalloc = %d\n", r->headers_in.cookies.nalloc);  
+            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "  .pool = 0x%X\n",r->headers_in.cookies.pool); 
+            
+            ngx_table_elt_t ** cookies = r->headers_in.cookies.elts;  
+            
+            ngx_uint_t i = 0;
+            for (; i < r->headers_in.cookies.nelts; i++) {   
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "Cookie key %s\n", cookies[i]->key.data); 
+                ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "Cookie line %s\n", cookies[i]->value.data);         
+            } 
+        }
+        
+    }
+    return NULL;
+}
 
 static char* eq_query_name(ngx_http_request_t *r, char *str, char *name) {
     char *index = ngx_strchr(str, '=');
@@ -193,6 +224,8 @@ ngx_http_oauth_handler_check(ngx_http_request_t *r, ngx_str_t *realm, ngx_str_t 
 {
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth_handler_check realm:%s\n", realm->data);
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "ngx_http_oauth_handler_check user_file:%s\n", user_file->data);
+
+    get_cookie(r, "oauth");
 
     ngx_int_t http_code = NGX_HTTP_UNAUTHORIZED;
     //有query string
